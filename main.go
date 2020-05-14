@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 	"github.com/labstack/gommon/log"
 	"io/ioutil"
+	log2 "log"
 	"net/http"
 	"strings"
 	"time"
@@ -20,6 +22,9 @@ func main() {
 
 	adminGroup := e.Group("/admin")
 	cookieGroup := e.Group("/cookie")
+	jwtGroup := e.Group("/jwt")
+
+	e.Use(middleware.Static("./"))
 	//adminGroup := e.Group("/admin", middleware.Logger())
 	//adminGroup.Use(middleware.Logger())
 	adminGroup.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
@@ -31,11 +36,20 @@ func main() {
 		}
 		return false, nil
 	}))
+	jwtGroup.Use(middleware.JWTWithConfig(middleware.JWTConfig{
+		SigningMethod: "HS512",
+		SigningKey:    []byte("mySecret"),
+		TokenLookup:   "cookie:JWTCookie",
+		AuthScheme:    "iLoveDogs",
+		// MyHeader: iLoveDogs {token}
+	}))
 	cookieGroup.Use(checkCookie)
 
 	adminGroup.GET("/main", mainAdmin)
 	//adminGroup.GET("/main", mainAdmin, middleware.Logger())
 	cookieGroup.GET("/main", mainCookie)
+
+	jwtGroup.GET("/main", mainJwt)
 
 	e.GET("/", yallo)
 	e.GET("/login", login)
@@ -46,6 +60,14 @@ func main() {
 	e.POST("/hamsters", addHamster)
 
 	e.Logger.Fatal(e.Start(":8000"))
+}
+
+func mainJwt(c echo.Context) error {
+	user := c.Get("user")
+	token := user.(*jwt.Token)
+	claims := token.Claims.(jwt.MapClaims)
+	log2.Println("Username : ", claims["name"], "User ID: ", claims["jti"])
+	return c.String(http.StatusOK, "You are on the top secret jwt page")
 }
 
 func login(c echo.Context) error {
@@ -62,9 +84,61 @@ func login(c echo.Context) error {
 		cookie.Expires = time.Now().Add(48 * time.Hour)
 
 		c.SetCookie(cookie)
-		return c.String(http.StatusOK, "You were logged in!")
+
+		token, err := createJwtToken()
+		if err != nil {
+			log2.Println("Error creation jwt token", err)
+			return c.String(http.StatusInternalServerError, "something went wrong")
+		}
+
+		jwtCookie := &http.Cookie{}
+		jwtCookie.Name = "JWTCookie"
+		jwtCookie.Value = token
+		jwtCookie.Expires = time.Now().Add(48 * time.Hour)
+
+		c.SetCookie(jwtCookie)
+
+		return c.JSON(http.StatusOK, map[string]string{
+			"message": "You were logged in",
+			"token":   token,
+		})
 	}
 	return c.String(http.StatusUnauthorized, "Username or password is incorrect")
+}
+
+type Hamster struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type Dog struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+type Cat struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type JwtClaims struct {
+	Name string `json:"name"`
+	jwt.StandardClaims
+}
+
+func createJwtToken() (string, error) {
+	claims := JwtClaims{
+		"test",
+		jwt.StandardClaims{
+			Id:        "main_user_id",
+			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		},
+	}
+	rawToken := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
+	token, err := rawToken.SignedString([]byte("mySecret"))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func mainCookie(c echo.Context) error {
@@ -73,11 +147,6 @@ func mainCookie(c echo.Context) error {
 
 func mainAdmin(c echo.Context) error {
 	return c.String(http.StatusOK, "You are on admin page")
-}
-
-type Hamster struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
 }
 
 func addHamster(c echo.Context) error {
@@ -93,11 +162,6 @@ func addHamster(c echo.Context) error {
 	return c.String(http.StatusOK, "We got your hamster")
 }
 
-type Dog struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-}
-
 func addDog(c echo.Context) error {
 	dog := Dog{}
 
@@ -111,11 +175,6 @@ func addDog(c echo.Context) error {
 
 	log.Printf("this is your dog: %#v", dog)
 	return c.String(http.StatusOK, "We got your dog")
-}
-
-type Cat struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
 }
 
 func addCat(c echo.Context) error {
